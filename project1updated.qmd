@@ -1,0 +1,116 @@
+---
+title: "project1updated"
+format: pdf
+editor: visual
+---
+
+## 
+
+```{r}
+library(tidyverse)
+library(survey)
+library(sampling)
+```
+
+```{r}
+college_scoreboard <- read_csv("Most-Recent-Cohorts-Institution_05192025.csv")
+college_scoreboard
+```
+
+Cluster into states, PPS states by number of schools in each state, SRS 5 schools in each state
+
+Data cleaning:
+
+```{r}
+#clean data to get colleges/universities with unique OPEID6 
+#only taking columns needed for now 
+college_scorecard_unique <- college_scoreboard |>
+  group_by(OPEID6) |>
+  summarise(
+    INSTNM = first(INSTNM), 
+    STABBR = first(STABBR),
+    CONTROL = first(CONTROL), 
+    UGDS = case_when(
+      all(is.na(UGDS)) ~ NA_real_,                         
+      sum(!is.na(UGDS)) > 1 ~ sum(UGDS, na.rm = TRUE),        
+      TRUE ~ max(UGDS, na.rm = TRUE)                           
+    ), 
+    MEDIAN_EARNINGS = mean(MD_EARN_WNE_P10, na.rm = TRUE),
+    STAT_MAJOR_IND = max(if_else(!is.na(PCIP27) & PCIP27 > 0, 1, 0), na.rm = TRUE)
+  ) 
+```
+
+```{r}
+#counts of schools in each state 
+state_counts <- college_scorecard_unique |>
+  group_by(STABBR) |>
+  summarise(num_colleges = n())
+
+```
+
+```{r}
+#sample 10 states using PPS with number of schools in each state 
+n_states <- 10
+pi_states <- n_states * state_counts$num_colleges / sum(state_counts$num_colleges)
+pi_states[pi_states > 1] <- 1
+
+pps_state_index <- UPsystematic(pi_states)
+
+sampled_states <- state_counts[pps_state_index == 1, ]
+sampled_states
+
+
+colleges_in_sampled_states <- college_scorecard_unique |>
+  filter(STABBR %in% sampled_states$STABBR)
+
+#out of those 10 states we picked sample 5 schools randomly 
+set.seed(322)
+sampled_colleges <- colleges_in_sampled_states |>
+  group_by(STABBR) |>
+  slice_sample(n = 5, replace = FALSE)
+
+
+sampled_colleges <- sampled_colleges |>
+  left_join(state_counts, by = "STABBR") |>
+  left_join(data.frame(STABBR = state_counts$STABBR, pi_state = pi_states), by = "STABBR") |>
+  mutate(
+    N_i = num_colleges,
+    n_i = 5,
+    pi_college_within_state = n_i / N_i,
+    weight = 1 / (pi_state * pi_college_within_state)
+  )
+
+sampled_colleges_clean <- sampled_colleges |>
+  group_by(STABBR) |>
+  filter(any(!is.na(UGDS) & !is.nan(UGDS))) |>
+  ungroup()
+
+pps_design <- svydesign(
+  id = ~STABBR + OPEID6,     # cluster 1 = state, cluster 2 = college
+  weights = ~weight,
+  data = sampled_colleges_clean
+)
+```
+
+Question 1:
+
+```{r}
+svytotal(~UGDS, pps_design, na.rm = TRUE)
+
+confint(svytotal(~UGDS, pps_design, na.rm = TRUE), level = 0.95)
+```
+
+Question 2
+
+```{r}
+svymean(~STAT_MAJOR_IND, pps_design)
+confint(svymean(~STAT_MAJOR_IND, pps_design), level = 0.95)
+```
+
+Question 3:
+
+1 = Public
+
+2 = Private Nonprofit
+
+3 = Proprietary
